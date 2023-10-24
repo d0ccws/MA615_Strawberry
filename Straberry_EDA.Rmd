@@ -1,0 +1,353 @@
+---
+title: "Strawberry_EDA"
+author: "Wenshuo Cai"
+date: "2023-10-24"
+output:
+  pdf_document: default
+  html_document: default
+---
+## Load the data
+
+```{r setup, include=FALSE }
+#| label: Load libraries
+#| warning: false
+#| message: false
+#| echo: false
+
+library(knitr)  
+library(tidyverse)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+```
+
+
+
+```{r warning=FALSE, message=FALSE}
+#| label: read data - glimpse 
+#| warning: false
+#| message: false
+#| echo: true
+
+strawberry <- read_csv("strawberry.csv", col_names = TRUE)
+
+glimpse(strawberry)
+
+```
+
+## Data Cleaning 
+
+```{r}
+#| label: drop one-item columns
+#| echo: false
+# Convert the 'Value' column to numeric, handling non-numeric entries gracefully
+strawberry$Value <- suppressWarnings(as.numeric(as.character(strawberry$Value)))
+
+# Define a function to remove columns with a single unique value
+remove_single_value_columns <- function(data_frame) {
+  single_value_columns <- c()
+  for (col in names(data_frame)) {
+    if (length(unique(data_frame[[col]])) == 1) {
+      single_value_columns <- c(single_value_columns, col)
+    }
+  }
+  
+  if (length(single_value_columns) == 0) {
+    return("No single-value columns found")
+  } else {
+    removed_info <- data.frame(Column = single_value_columns, Value = sapply(single_value_columns, function(col) data_frame[1, col, drop = TRUE]))
+    return(removed_info)
+  }
+}
+
+# Apply the function to the dataframe
+removed_columns_info <- remove_single_value_columns(strawberry)
+
+# Display the names and values of the removed columns
+print(removed_columns_info)
+
+# If any single-value columns were found, remove them from the dataframe
+if (is.data.frame(removed_columns_info)) {
+  strawberry <- strawberry[, !(names(strawberry) %in% removed_columns_info$Column)]
+}
+
+
+```
+```{r}
+#| label: glimpse of strawberry data
+#| echo: false
+
+glimpse(strawberry)
+```
+
+###Examine the data.
+```{r}
+#| label: examine rows
+#| echo: true
+## is every line associated with a state?
+
+## state_all1 contains the number of rows containing data 
+## for each of the 47 strawberry-growing states.
+state_all1 <- strawberry |> group_by(State) |> count()
+
+## test if every row is associated with a state by summing the 
+## counts and testing for equality with the total rows in the 
+## data frame
+
+if(sum(state_all1$n) == dim(strawberry)[1]){print("Every row has value in the State column.")}
+
+```
+
+```{r}
+#| label: which state has the most rows
+#| echo: true
+
+state_max <- state_all1$State[which(state_all1$n ==  max(state_all1$n)  )]
+print(state_max)
+```
+
+
+```{r}
+#| label: examine California data
+#| echo: true
+
+## filter rows of California data from the CENSUS data
+calif_census <- strawberry |> filter((State=="CALIFORNIA") & (Program=="CENSUS"))
+
+
+## ## filter rows of California data from the SURVEY data
+calif_survey <- strawberry |> filter((State=="CALIFORNIA") & (Program=="SURVEY"))
+
+ 
+census_col <- colnames(calif_census)
+
+survey_col <- colnames(calif_survey)
+
+
+```
+
+
+```{r}
+#|label: split srawberry into census and survey pieces
+#|echo:false
+
+strwb_census <- strawberry |> filter(Program == "CENSUS")
+
+strwb_survey <- strawberry |> filter(Program == "SURVEY")
+
+## check that all of the rows are accounted for
+
+nrow(strawberry) == (nrow(strwb_census) + nrow(strwb_survey))
+
+## Move marketing-related rows in strw_b_chem 
+## to strw_b_sales
+strwb_census <- strwb_census |>
+  separate_wider_delim(  cols = `Data Item`,
+                         delim = ",",
+                         names = c("Fruit",
+                                 "temp1",
+                                 "temp2",
+                                 "temp3"),
+                         too_many = "error",
+                         too_few = "align_start"
+                       )
+
+
+
+## split temp1 into crop_type, Prop_acct
+
+strwb_census <- strwb_census |>
+  separate_wider_delim(  cols = temp1,
+                         delim = " - ",
+                         names = c("crop_type",
+                                 "Prop_acct"),
+                         too_many = "error",
+                         too_few = "align_start"
+                       )
+
+
+# Define a function to clean and trim a column
+clean_and_trim <- function(data_frame, column) {
+  data_frame %>%
+    mutate(!!column := str_trim(!!sym(column), side = "both")) %>%
+    mutate(!!column := na_if(!!sym(column), "")) # Convert NA to empty string
+}
+
+# Define a function to remove specific patterns from a column
+remove_patterns <- function(data_frame, column, patterns) {
+  for (pattern in patterns) {
+    data_frame <- data_frame %>%
+      mutate(!!column := str_replace_all(!!sym(column), pattern, ""))
+  }
+  data_frame
+}
+
+# Clean and trim columns
+strwb_census <- clean_and_trim(strwb_census, "crop_type")
+strwb_census <- clean_and_trim(strwb_census, "temp2")
+strwb_census <- clean_and_trim(strwb_census, "temp3")
+
+# Handle `Fresh Market` column
+strwb_census <- strwb_census %>%
+  mutate(`Fresh Market` = temp2) %>%
+  remove_patterns("Fresh Market", c("^MEA.*", "^P.*", "^FRESH MARKET - "))
+
+# Handle `Process Market` column
+strwb_census <- strwb_census %>%
+  mutate(`Process Market` = temp2) %>%
+  remove_patterns("Process Market", c("^MEA.*", "PROCESSING - "))
+
+# Handle `temp2` column
+strwb_census <- remove_patterns(strwb_census, "temp2", c("^F.*", "^P.*"))
+
+# Combine `temp2` and `temp3`, clean `Metric` column, and relocate columns
+strwb_census <- strwb_census %>%
+  unite("Metric", c("temp2", "temp3"), sep = "") %>%
+  mutate(Metric = str_replace(Metric, "MEASURED IN ", "")) %>%
+  relocate(Metric, .before = Domain) %>%
+  rename(Totals = Prop_acct)
+
+
+
+```
+
+```{r}
+#| label: fix the leading space
+#| echo: false
+
+# Apply the trimming operation to the existing columns
+strawberry$`Data Item` <- str_trim(strawberry$`Data Item`, side = "both")
+strawberry$Domain <- str_trim(strawberry$Domain, side = "both")
+strawberry$`Domain Category` <- str_trim(strawberry$`Domain Category`, side = "both")
+
+
+```
+
+
+```{r}
+#| label: Function to remove commas and process footnotes
+#| echo: false
+#| warning: false
+#| message: false
+#| eval: true
+
+# Function to remove commas and convert to numeric
+convert_to_numeric <- function(input_vector) {
+  numeric_vector <- suppressWarnings(as.numeric(str_replace_all(input_vector, ",", "")))
+  return(numeric_vector)
+}
+
+# Convert 'Value' column to numeric after removing commas
+strwb_census$NumericValue <- convert_to_numeric(strwb_census$Value)
+
+# Find and process footnotes
+process_footnotes <- function(value_column) {
+  footnote_indices <- str_detect(value_column, "^\\([A-Z]\\)$")
+  footnotes <- unique(value_column[footnote_indices])
+  footnote_values <- list("Indices" = which(footnote_indices), "Footnotes" = footnotes)
+  return(footnote_values)
+}
+
+footnotes_info <- process_footnotes(strwb_census$Value)
+
+# Print first 20 values for verification
+print(head(strwb_census$NumericValue, 20))
+print(footnotes_info)
+
+# Print unique values from the 'Value' column
+print(unique(strwb_census$Value))
+
+# Or, to view a random sample of 20 values from the 'Value' column
+set.seed(42)  # Setting seed for reproducibility
+sample_values <- sample(strwb_census$Value, 20)
+print(sample_values)
+
+```
+
+
+## EDA
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Load the dataset
+strawberry_data <- read.csv("strawberry.csv")
+
+# Convert the 'Value' column to numeric, handling non-numeric entries gracefully
+strawberry_data$Value <- as.numeric(as.character(strawberry_data$Value))
+
+# Aggregate the strawberry production by state
+strawberry_production_by_state <- strawberry_data %>%
+  group_by(State) %>%
+  summarise(Total_Production = sum(Value, na.rm = TRUE)) %>%
+  arrange(desc(Total_Production))
+
+# Filter out low-production states (e.g., states with Total_Production >= a threshold)
+production_threshold <- 500  # Define your threshold here
+strawberry_production_filtered <- strawberry_production_by_state %>%
+  filter(Total_Production >= production_threshold)
+
+# Create a bar plot to visualize the strawberry production by state with gradient fill
+ggplot(strawberry_production_by_state, aes(x = Total_Production, fill = Total_Production, y = reorder(State, +Total_Production))) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +  # Gradient fill
+  labs(
+    title = "Total Strawberry Production by State",
+    x = "State",
+    y = "Total Production"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 5.75))  # Adjust the size of y-axis labels
+```
+
+California Dominates Strawberry Production: The state of California stands out as the leading producer of strawberries, with the highest total production. It is indicated by the longest horizontal bar on the chart.
+While California leads in production, there is a considerable variation in production levels among other states. Some states have relatively low production, while others have moderate to high production.
+
+
+
+## References
+[NASS help](https://quickstats.nass.usda.gov/tutorials)
+
+[Quick Stats Glossary](https://quickstats.nass.usda.gov/src/glossary.pdf)
+
+
+[Quick Stats Column Definitions](https://quickstats.nass.usda.gov/param_define)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
